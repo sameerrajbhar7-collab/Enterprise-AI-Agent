@@ -29,8 +29,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ secrets.username }}/Enterprise_Agent:latest
-            ${{ secrets.username }}/Enterprise_Agent:${{ github.sha }}
+            ${{ secrets.username }}/enterprise_agent:latest
+            ${{ secrets.username }}/enterprise_agent:${{ github.sha }}
 
   deploy:
     name: Deploy to EC2
@@ -45,14 +45,14 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            docker pull ${{ secrets.username }}/Enterprise_Agent:latest
+            docker pull ${{ secrets.username }}/enterprise_agent:latest
 
-            docker rm -f Enterprise_Agent 2>/dev/null || true
+            docker rm -f enterprise_agent 2>/dev/null || true
 
             docker run -d \
-              --name Enterprise_Agent \
+              --name enterprise_agent \
               --env-file .env \
               -p 5000:5000 \
-              ${{ secrets.username }}/Enterprise_Agent:latest
+              ${{ secrets.username }}/enterprise_agent:latest
 
             docker image prune -f
