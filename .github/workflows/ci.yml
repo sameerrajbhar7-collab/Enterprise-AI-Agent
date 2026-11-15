@@ -45,7 +45,6 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            touch .env
             docker pull ${{ secrets.username }}/enterprise_agent:latest
 
             docker rm -f enterprise_agent 2>/dev/null || true

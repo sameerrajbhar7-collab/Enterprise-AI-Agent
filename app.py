@@ -16,7 +16,7 @@ from werkzeug.utils import secure_filename
 # 1. SETUP & API KEY
 # -----------------------------------------------------
 load_dotenv()
-openai.api_key = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
 app = Flask(__name__)
 app.secret_key = "super_secret_key"
@@ -27,6 +27,12 @@ CHROMA_DB_DIR = os.path.join(BASE_DIR, "chroma_db")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+def get_openai_client():
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
+        raise ValueError("OPENAI_API_KEY is not set. Please add OPENAI_API_KEY=your_key to your .env file.")
+    return OpenAI(api_key=key)
 
 # -----------------------------------------------------
 # 2. CHROMADB & EMBEDDING SETUP
@@ -39,7 +45,7 @@ class OpenAIEmbeddingFunction:
         return "openai_embeddings"
 
     def __call__(self, input: list[str]) -> list[list[float]]:
-        client = OpenAI()
+        client = get_openai_client()
         response = client.embeddings.create(
             input=input,
             model="text-embedding-3-small"
@@ -63,20 +69,23 @@ def extract_text(file_path, filename):
     ext = filename.rsplit('.', 1)[-1].lower()
     text = ""
     
-    if ext == 'pdf':
-        with open(file_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted + "\n"
-    elif ext == 'docx':
-        doc = docx.Document(file_path)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    elif ext == 'txt':
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            text = f.read()
+    try:
+        if ext == 'pdf':
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        text += extracted + "\n"
+        elif ext == 'docx':
+            doc = docx.Document(file_path)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+        elif ext == 'txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+    except Exception as e:
+        print(f"Error reading file {filename}: {e}")
             
     return text
 
@@ -112,10 +121,13 @@ def upload_file():
     ids = [str(uuid.uuid4()) for _ in range(len(chunks))]
     metadatas = [{"filename": filename} for _ in chunks]
     
-    collection = get_collection()
-    collection.upsert(documents=chunks, metadatas=metadatas, ids=ids)
-    
-    flash("Document uploaded and processed successfully!", "success")
+    try:
+        collection = get_collection()
+        collection.upsert(documents=chunks, metadatas=metadatas, ids=ids)
+        flash("Document uploaded and processed successfully!", "success")
+    except Exception as e:
+        flash(f"Error saving to vector database: {str(e)}", "error")
+
     return redirect(url_for("index"))
 
 @app.route("/ask", methods=["POST"])
@@ -124,34 +136,35 @@ def ask():
     if not question:
         return render_template("index.html", error="Please enter a question.")
 
-    # 1. Search Database for Context (Manual Cosine Similarity)
-    collection = get_collection()
-    all_data = collection.get(include=["embeddings", "documents"])
-    all_embeddings = all_data.get("embeddings", [])
-    all_docs = all_data.get("documents", [])
-    
-    if all_embeddings is None or len(all_embeddings) == 0:
-        context = "No relevant context found."
-    else:
-        # Generate embedding for the user's question using OpenAI
-        question_embedding = embedding_fn([question])[0]
+    try:
+        # 1. Search Database for Context (Manual Cosine Similarity)
+        collection = get_collection()
+        all_data = collection.get(include=["embeddings", "documents"])
+        all_embeddings = all_data.get("embeddings", [])
+        all_docs = all_data.get("documents", [])
         
-        # Convert to numpy arrays for sklearn
-        q_arr = np.array(question_embedding).reshape(1, -1)
-        docs_arr = np.array(all_embeddings)
-        
-        # Calculate cosine similarity manually using sklearn
-        similarities = cosine_similarity(q_arr, docs_arr)[0]
-        
-        # Get indices of the top 5 most similar chunks (sorted highest to lowest)
-        top_indices = np.argsort(similarities)[-5:][::-1]
-        
-        # Retrieve the corresponding text chunks
-        documents = [all_docs[i] for i in top_indices]
-        context = "\n\n".join(documents)
-        
-    # 2. Build the Prompt for OpenAI
-    prompt = f"""Use the following pieces of context to answer the user's question.
+        if all_embeddings is None or len(all_embeddings) == 0:
+            context = "No relevant context found."
+        else:
+            # Generate embedding for the user's question using OpenAI
+            question_embedding = embedding_fn([question])[0]
+            
+            # Convert to numpy arrays for sklearn
+            q_arr = np.array(question_embedding).reshape(1, -1)
+            docs_arr = np.array(all_embeddings)
+            
+            # Calculate cosine similarity manually using sklearn
+            similarities = cosine_similarity(q_arr, docs_arr)[0]
+            
+            # Get indices of the top 5 most similar chunks (sorted highest to lowest)
+            top_indices = np.argsort(similarities)[-5:][::-1]
+            
+            # Retrieve the corresponding text chunks
+            documents = [all_docs[i] for i in top_indices]
+            context = "\n\n".join(documents)
+            
+        # 2. Build the Prompt for OpenAI
+        prompt = f"""Use the following pieces of context to answer the user's question.
 If you don't know the answer based on the context, just say that you don't know.
 
 Context:
@@ -161,9 +174,9 @@ Question: {question}
 
 Answer:"""
 
-    # 3. Send to OpenAI
-    try:
-        response = openai.chat.completions.create(
+        # 3. Send to OpenAI
+        client = get_openai_client()
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful and intelligent AI assistant."},
